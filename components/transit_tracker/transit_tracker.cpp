@@ -1,6 +1,9 @@
 #include "transit_tracker.h"
 #include "string_utils.h"
 
+#include <map>
+#include <algorithm>
+
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
 #include "esphome/components/json/json_util.h"
@@ -135,8 +138,12 @@ void TransitTracker::on_ws_message_(websockets::WebsocketsMessage message) {
         route_color = Color(std::stoul(trip["routeColor"].as<std::string>(), nullptr, 16));
       }
 
+      // stopId may be absent on older server versions; default to empty
+      std::string stop_id = trip.containsKey("stopId") ? trip["stopId"].as<std::string>() : "";
+
       this->schedule_state_.trips.push_back({
         .route_id = route_id,
+        .stop_id = stop_id,
         .route_name = route_name,
         .route_color = route_color,
         .headsign = headsign,
@@ -146,6 +153,7 @@ void TransitTracker::on_ws_message_(websockets::WebsocketsMessage message) {
       });
     }
 
+    this->update_display_rows_();
     this->schedule_state_.mutex.unlock();
 
     return true;
@@ -340,21 +348,7 @@ const uint8_t realtime_icon[6][6] = {
   {3, 0, 2, 0, 1, 1}
 };
 
-void HOT TransitTracker::draw_realtime_icon_(int bottom_right_x, int bottom_right_y, unsigned long uptime) {
-  const int num_frames = 6;
-  const int idle_frame_duration = 3000;
-  const int anim_frame_duration = 200;
-  const int cycle_duration = idle_frame_duration + (num_frames - 1) * anim_frame_duration;
-
-  unsigned long cycle_time = uptime % cycle_duration;
-
-  int frame;
-  if (cycle_time < idle_frame_duration) {
-    frame = 0;
-  } else {
-    frame = 1 + (cycle_time - idle_frame_duration) / anim_frame_duration;
-  }
-
+void HOT TransitTracker::draw_realtime_icon_(int x, int y, int frame) {
   auto is_segment_lit = [frame](uint8_t segment) {
     switch (segment) {
       case 1: return frame >= 1 && frame <= 3;
@@ -375,7 +369,7 @@ void HOT TransitTracker::draw_realtime_icon_(int bottom_right_x, int bottom_righ
       }
 
       Color icon_color = is_segment_lit(segment_number) ? lit_color : unlit_color;
-      this->display_->draw_pixel_at(bottom_right_x - (5 - j), bottom_right_y - (5 - i), icon_color);
+      this->display_->draw_pixel_at(x + j, y + i, icon_color);
     }
   }
 }
@@ -399,23 +393,17 @@ void TransitTracker::draw_trip(
     int time_width;
     this->font_->measure(time_display.c_str(), &time_width, &_, &_, &_);
 
+    // Use a stable baseline width for clipping to prevent jitter when time changes (e.g., "10m" → "9m")
+    int baseline_time_width;
+    this->font_->measure("99m", &baseline_time_width, &_, &_, &_);
+    int stable_time_width = std::max(time_width, baseline_time_width);
+
     int headsign_clipping_start = route_width + 3;
-    int headsign_clipping_end = this->display_->get_width() - time_width - 2;
+    int headsign_clipping_end = this->display_->get_width() - stable_time_width - 2;
 
     if (!no_draw) {
       Color time_color = trip.is_realtime ? Color(0x20FF00) : Color(0xa7a7a7);
       this->display_->print(this->display_->get_width() + 1, y_offset, this->font_, time_color, display::TextAlign::TOP_RIGHT, time_display.c_str());
-    }
-
-    if (trip.is_realtime) {
-      headsign_clipping_end -= 8;
-
-      if(!no_draw) {
-        int icon_bottom_right_x = this->display_->get_width() - time_width - 2;
-        int icon_bottom_right_y = y_offset + font_height - 6;
-
-        this->draw_realtime_icon_(icon_bottom_right_x, icon_bottom_right_y, uptime);
-      }
     }
 
     int headsign_max_width = headsign_clipping_end - headsign_clipping_start;
@@ -424,6 +412,13 @@ void TransitTracker::draw_trip(
     this->font_->measure(trip.headsign.c_str(), &headsign_actual_width, &_, &_, &_);
 
     int headsign_overflow = headsign_actual_width - headsign_max_width;
+    
+    // Minimum threshold to prevent flickering at boundary cases
+    // If overflow is very small (< 3 pixels), don't scroll - treat as fitting
+    static constexpr int min_scroll_threshold = 3;
+    if (headsign_overflow > 0 && headsign_overflow < min_scroll_threshold) {
+      headsign_overflow = 0;
+    }
     if (headsign_overflow_out) {
       *headsign_overflow_out = headsign_overflow;
     }
@@ -434,12 +429,9 @@ void TransitTracker::draw_trip(
 
     int scroll_offset = 0;
     if (headsign_overflow > 0 && scroll_cycle_duration > 0) {
-      /// Note: The scroll may jump if headsign_clipping_end changes (e.g. due to the width of the arrival time changing).
-      /// This is probably not a big deal, since the display makes sudden changes anyway (e.g. when routes are updated)
-      /// and this happens relatively infrequently.
-
       int scroll_time = headsign_overflow * 1000 / scroll_speed;
-      int scroll_cycle_time = uptime % scroll_cycle_duration;
+      // Use time since cycle start for stable scrolling
+      int scroll_cycle_time = (uptime - this->scroll_cycle_start_) % scroll_cycle_duration;
 
       // Scroll idle (left side - default)
       if(scroll_cycle_time < idle_time_left) {
@@ -461,7 +453,8 @@ void TransitTracker::draw_trip(
       }
     }
 
-    this->display_->start_clipping(headsign_clipping_start, 0, headsign_clipping_end, this->display_->get_height());
+    // Clip to just this row to prevent interference with other rows
+    this->display_->start_clipping(headsign_clipping_start, y_offset, headsign_clipping_end, y_offset + font_height);
     this->display_->print(headsign_clipping_start - scroll_offset, y_offset, this->font_, trip.headsign.c_str());
     this->display_->end_clipping();
 }
@@ -497,46 +490,271 @@ void HOT TransitTracker::draw_schedule() {
     return;
   }
 
-  if (this->schedule_state_.trips.empty()) {
-    auto message = "No upcoming arrivals";
-    if (this->display_departure_times_) {
-      message = "No upcoming departures";
-    }
+  this->schedule_state_.mutex.lock();
 
-    this->draw_text_centered_(message, Color(0x252627));
+  if (this->display_rows_.empty()) {
+    bool no_trips = this->schedule_state_.trips.empty();
+    this->schedule_state_.mutex.unlock();
+
+    if (no_trips) {
+      auto message = "No upcoming arrivals";
+      if (this->display_departure_times_) {
+        message = "No upcoming departures";
+      }
+      this->draw_text_centered_(message, Color(0x252627));
+    }
     return;
   }
-
-  this->schedule_state_.mutex.lock();
 
   int nominal_font_height = this->font_->get_ascender() + this->font_->get_descender();
   unsigned long uptime = millis();
   uint rtc_now = this->rtc_->now().timestamp;
 
-  int scroll_cycle_duration = 0;
-  if (this->scroll_headsigns_) {
-    int largest_headsign_overflow = 0;
-    for (const Trip &trip : this->schedule_state_.trips) {
-      int headsign_overflow;
-      this->draw_trip(trip, 0, nominal_font_height, uptime, rtc_now, true, &headsign_overflow);
-      largest_headsign_overflow = max(largest_headsign_overflow, headsign_overflow);
-    }
-
-    if (largest_headsign_overflow > 0) {
-      int longest_scroll_time = largest_headsign_overflow * 1000 / scroll_speed;
-      scroll_cycle_duration = idle_time_left + idle_time_right + 2*longest_scroll_time;
-    }
+  // Calculate realtime icon frame once per loop to save CPU
+  const int num_frames = 6;
+  const int idle_frame_duration = 3000;
+  const int anim_frame_duration = 200;
+  const int cycle_duration = idle_frame_duration + (num_frames - 1) * anim_frame_duration;
+  unsigned long cycle_time = uptime % cycle_duration;
+  int icon_frame = 0;
+  if (cycle_time >= idle_frame_duration) {
+    icon_frame = 1 + (cycle_time - idle_frame_duration) / anim_frame_duration;
   }
 
-  int max_trips_height = (this->limit_ * this->font_->get_ascender()) + ((this->limit_ - 1) * this->font_->get_descender());
-  int y_offset = (this->display_->get_height() % max_trips_height) / 2;
+  // Calculate baseline time width for stable layout
+  int baseline_time_width, _;
+  const char* baseline_text = "99m";
+  if (this->unit_display_ == UNIT_DISPLAY_LONG) {
+    baseline_text = "99min";
+  } else if (this->unit_display_ == UNIT_DISPLAY_NONE) {
+    baseline_text = "99:99";
+  }
+  this->font_->measure(baseline_text, &baseline_time_width, &_, &_, &_);
+  int total_times_width = this->double_time_ ? (baseline_time_width * 2 + 3) : (baseline_time_width + 8);
 
-  for (const Trip &trip : this->schedule_state_.trips) {
-    this->draw_trip(trip, y_offset, nominal_font_height, uptime, rtc_now, false, nullptr, scroll_cycle_duration);
+  int num_total_rows = this->display_rows_.size();
+  int num_pages = (num_total_rows + items_per_page - 1) / items_per_page;
+  if (num_pages < 1) num_pages = 1;
+
+  if (!this->double_time_) {
+    this->page_index_ = 0;
+  }
+
+  int start_idx = (this->page_index_ % num_pages) * items_per_page;
+  int end_idx = std::min(start_idx + items_per_page, num_total_rows);
+
+  // Helper lambda to calculate scroll duration for a range of rows
+  auto calc_scroll_duration = [&](int start, int end) -> int {
+    if (!this->scroll_headsigns_) return 0;
+    
+    int largest_headsign_overflow = 0;
+
+    for (int i = start; i < end; i++) {
+        const auto &row = this->display_rows_[i];
+        int route_w, headsign_w, _, __;
+        this->font_->measure(row.primary_trip->route_name.c_str(), &route_w, &_, &_, &_);
+        this->font_->measure(row.primary_trip->headsign.c_str(), &headsign_w, &_, &_, &_);
+        
+        int tx = this->display_->get_width() + 1;
+        int times_to_draw = this->double_time_ ? 2 : 1;
+        for (int j = times_to_draw - 1; j >= 0; j--) {
+             if (j < row.trips.size()) {
+                 const Trip* t = row.trips[j];
+                 std::string ts = this->from_now_(
+                    this->display_departure_times_ ? t->departure_time : t->arrival_time,
+                    rtc_now
+                 );
+                 int tw = 0;
+                 this->font_->measure(ts.c_str(), &tw, &_, &_, &_);
+                 int item_width = tw;
+                 if (!this->double_time_ && t->is_realtime) {
+                     item_width += 8;
+                 }
+                 tx -= item_width + 2;
+             }
+        }
+        
+        int headsign_clipping_end = tx;
+        int headsign_clipping_start = route_w + 3;
+        int headsign_max_width = headsign_clipping_end - headsign_clipping_start;
+        int headsign_overflow = headsign_w - headsign_max_width;
+        
+        static constexpr int min_scroll_threshold = 3;
+        if (headsign_overflow >= min_scroll_threshold) {
+            largest_headsign_overflow = std::max(largest_headsign_overflow, headsign_overflow);
+        }
+    }
+    
+    if (largest_headsign_overflow >= 3) {
+        return idle_time_left + idle_time_right + 2 * (largest_headsign_overflow * 1000 / scroll_speed);
+    }
+    return 0;
+  };
+
+  int scroll_cycle_duration = calc_scroll_duration(start_idx, end_idx);
+  int page_dwell = std::max(5000, scroll_cycle_duration);
+
+  if (this->double_time_ && uptime - this->last_page_change_ > (unsigned long)page_dwell) {
+      this->page_index_ = (this->page_index_ + 1) % num_pages;
+      this->last_page_change_ = uptime;
+      this->scroll_cycle_start_ = uptime;
+      
+      start_idx = (this->page_index_ % num_pages) * items_per_page;
+      end_idx = std::min(start_idx + items_per_page, num_total_rows);
+      scroll_cycle_duration = calc_scroll_duration(start_idx, end_idx);
+  }
+  
+  int effective_scroll_duration = scroll_cycle_duration;
+
+  // Calculate vertical centering
+  int num_rows_on_page = end_idx - start_idx;
+  int max_trips_height = num_rows_on_page * nominal_font_height - this->font_->get_descender();
+  int y_offset = (this->display_->get_height() - max_trips_height) / 2;
+  if (y_offset < 0) y_offset = 0;
+
+  for (int idx = start_idx; idx < end_idx; idx++) {
+    const auto &row = this->display_rows_[idx];
+    // Draw route name
+    this->display_->print(0, y_offset, this->font_, row.primary_trip->route_color, display::TextAlign::TOP_LEFT, row.primary_trip->route_name.c_str());
+    
+    int route_width;
+    int _, __;
+    this->font_->measure(row.primary_trip->route_name.c_str(), &route_width, &_, &_, &_);
+
+    // Draw times from right to left
+    int time_x = this->display_->get_width() + 1;
+    int times_to_draw = this->double_time_ ? 2 : 1;
+    for (int i = times_to_draw - 1; i >= 0; i--) {
+      std::string time_str;
+      Color color = Color(0xa7a7a7);
+      int width = 0; // Initialize with 0
+      int w = 0; 
+      
+      if (i < row.trips.size()) {
+        const Trip* t = row.trips[i];
+        time_str = this->from_now_(
+          this->display_departure_times_ ? t->departure_time : t->arrival_time,
+          rtc_now
+        );
+        color = t->is_realtime ? Color(0x20FF00) : Color(0xa7a7a7);
+        int _, __;
+        this->font_->measure(time_str.c_str(), &w, &_, &_, &_);
+        width = w; // Use actual width
+      }
+      
+      if (!time_str.empty()) {
+        this->display_->print(time_x, y_offset, this->font_, color, display::TextAlign::TOP_RIGHT, time_str.c_str());
+
+        if (!this->double_time_ && i < row.trips.size() && row.trips[i]->is_realtime) {
+           int icon_x = time_x - w - 8;
+           int icon_y = y_offset + nominal_font_height - 11;
+           this->draw_realtime_icon_(icon_x, icon_y, icon_frame);
+           width += 8;
+        }
+        time_x -= width + 2;
+      }
+    }
+    
+    // Calculate headsign clipping area - must match scroll calculation exactly
+    int headsign_clipping_start = route_width + 3;
+    int headsign_clipping_end = time_x; // Use actual end position
+    int headsign_max_width = headsign_clipping_end - headsign_clipping_start;
+    
+    int headsign_actual_width;
+    this->font_->measure(row.primary_trip->headsign.c_str(), &headsign_actual_width, &_, &_, &_);
+    
+    int headsign_overflow = headsign_actual_width - headsign_max_width;
+    
+    // Apply minimum threshold to prevent flickering
+    static constexpr int min_scroll_threshold = 3;
+    if (headsign_overflow > 0 && headsign_overflow < min_scroll_threshold) {
+      headsign_overflow = 0;
+    }
+    
+    // Calculate scroll offset
+    int scroll_offset = 0;
+    if (headsign_overflow > 0 && effective_scroll_duration > 0) {
+      int scroll_time = headsign_overflow * 1000 / scroll_speed;
+      int scroll_cycle_time = (uptime - this->scroll_cycle_start_) % effective_scroll_duration;
+      
+      if (scroll_cycle_time < idle_time_left) {
+        // Idle left
+      } else if (scroll_cycle_time < idle_time_left + scroll_time) {
+        int time_since_scroll_start = scroll_cycle_time - idle_time_left;
+        scroll_offset = time_since_scroll_start * scroll_speed / 1000;
+      } else if (scroll_cycle_time < idle_time_left + scroll_time + idle_time_right) {
+        scroll_offset = headsign_overflow;
+      } else if (scroll_cycle_time < idle_time_left + 2 * scroll_time + idle_time_right) {
+        int time_since_scroll_start = scroll_cycle_time - (idle_time_left + scroll_time + idle_time_right);
+        scroll_offset = headsign_overflow - (time_since_scroll_start * scroll_speed / 1000);
+      }
+    }
+    
+    // Draw headsign with clipping
+    this->display_->start_clipping(headsign_clipping_start, y_offset - 2, headsign_clipping_end, y_offset + nominal_font_height + 2);
+    this->display_->print(headsign_clipping_start - scroll_offset, y_offset, this->font_, row.primary_trip->headsign.c_str());
+    this->display_->end_clipping();
+    
     y_offset += nominal_font_height;
   }
 
   this->schedule_state_.mutex.unlock();
+}
+
+void TransitTracker::update_display_rows_() {
+  this->display_rows_.clear();
+  size_t max_trips = this->double_time_ ? 2 : 1;
+
+  if (this->double_time_) {
+    // Group by route_id + stop_id using std::map (alphabetically sorted by route_id)
+    std::map<std::pair<std::string, std::string>, std::vector<const Trip*>> grouped_trips;
+    for (const Trip &trip : this->schedule_state_.trips) {
+      auto key = std::make_pair(trip.route_id, trip.stop_id);
+      if (grouped_trips[key].size() < max_trips) {
+        grouped_trips[key].push_back(&trip);
+      }
+    }
+
+    int rows_processed = 0;
+    for (const auto &group : grouped_trips) {
+      if (rows_processed >= this->limit_) break;
+      const auto &trips = group.second;
+      if (trips.empty()) continue;
+
+      DisplayRow row;
+      row.primary_trip = trips[0];
+      row.trips = trips;
+
+      this->display_rows_.push_back(row);
+      rows_processed++;
+    }
+  } else {
+    // Group by route_id + stop_id but preserve server order (time sorted)
+    std::map<std::pair<std::string, std::string>, size_t> group_indices;
+
+    for (const Trip &trip : this->schedule_state_.trips) {
+      auto key = std::make_pair(trip.route_id, trip.stop_id);
+      
+      auto it = group_indices.find(key);
+      if (it != group_indices.end()) {
+        size_t index = it->second;
+        if (this->display_rows_[index].trips.size() < max_trips) {
+          this->display_rows_[index].trips.push_back(&trip);
+        }
+      } else {
+        if (this->display_rows_.size() >= this->limit_) {
+          continue;
+        }
+
+        DisplayRow row;
+        row.primary_trip = &trip;
+        row.trips.push_back(&trip);
+        
+        this->display_rows_.push_back(row);
+        group_indices[key] = this->display_rows_.size() - 1;
+      }
+    }
+  }
 }
 
 }  // namespace transit_tracker

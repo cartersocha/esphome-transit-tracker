@@ -49,6 +49,7 @@ class TransitTracker : public Component {
     void set_list_mode(const std::string &list_mode) { list_mode_ = list_mode; }
     void set_limit(int limit) { limit_ = limit; }
     void set_scroll_headsigns(bool scroll_headsigns) { scroll_headsigns_ = scroll_headsigns; }
+    void set_double_time(bool double_time) { double_time_ = double_time; }
 
     void set_unit_display(UnitDisplay unit_display) { unit_display_ = unit_display; }
     void add_abbreviation(const std::string &from, const std::string &to) { abbreviations_[from] = to; }
@@ -58,19 +59,27 @@ class TransitTracker : public Component {
     void set_abbreviations_from_text(const std::string &text);
     void set_route_styles_from_text(const std::string &text);
 
+    struct DisplayRow {
+      const Trip* primary_trip;
+      std::vector<const Trip*> trips;
+    };
+
   protected:
     static constexpr int scroll_speed = 10; // pixels/second
-    static constexpr int idle_time_left = 5000;
-    static constexpr int idle_time_right = 1000;
+    static constexpr int idle_time_left = 8000;
+    static constexpr int idle_time_right = 2000;
 
     std::string from_now_(time_t unix_timestamp, uint rtc_now) const;
     void draw_text_centered_(const char *text, Color color);
-    void draw_realtime_icon_(int bottom_right_x, int bottom_right_y, unsigned long now);
+    void draw_realtime_icon_(int x, int y, int frame);
 
     void draw_trip(
       const Trip &trip, int y_offset, int font_height, unsigned long uptime, uint rtc_now,
       bool no_draw = false, int *headsign_overflow_out = nullptr, int scroll_cycle_duration = 0
     );
+
+    void update_display_rows_();
+    std::vector<DisplayRow> display_rows_;
 
     ScheduleState schedule_state_;
 
@@ -100,6 +109,15 @@ class TransitTracker : public Component {
     Color default_route_color_ = Color(0x028e51);
     std::map<std::string, RouteStyle> route_styles_;
     bool scroll_headsigns_ = false;
+    bool double_time_ = false;
+
+    // Cached scroll state to prevent mid-cycle jumps
+    unsigned long scroll_cycle_start_ = 0;
+
+    // Pagination
+    int page_index_ = 0;
+    unsigned long last_page_change_ = 0;
+    static constexpr int items_per_page = 3;
 };
 
 
