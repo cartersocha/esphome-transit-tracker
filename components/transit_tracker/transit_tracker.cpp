@@ -411,7 +411,10 @@ void TransitTracker::draw_trip(
     int headsign_actual_width;
     this->font_->measure(trip.headsign.c_str(), &headsign_actual_width, &_, &_, &_);
 
-    int headsign_overflow = headsign_actual_width - headsign_max_width;
+    int headsign_overflow = 0;
+    if (headsign_max_width > 0) {
+      headsign_overflow = headsign_actual_width - headsign_max_width;
+    }
     
     // Minimum threshold to prevent flickering at boundary cases
     // If overflow is very small (< 3 pixels), don't scroll - treat as fitting
@@ -454,9 +457,11 @@ void TransitTracker::draw_trip(
     }
 
     // Clip to just this row to prevent interference with other rows
-    this->display_->start_clipping(headsign_clipping_start, y_offset, headsign_clipping_end, y_offset + font_height);
-    this->display_->print(headsign_clipping_start - scroll_offset, y_offset, this->font_, trip.headsign.c_str());
-    this->display_->end_clipping();
+    if (headsign_clipping_end > headsign_clipping_start) {
+      this->display_->start_clipping(headsign_clipping_start, y_offset, headsign_clipping_end, y_offset + font_height);
+      this->display_->print(headsign_clipping_start - scroll_offset, y_offset, this->font_, trip.headsign.c_str());
+      this->display_->end_clipping();
+    }
 }
 
 void HOT TransitTracker::draw_schedule() {
@@ -577,6 +582,9 @@ void HOT TransitTracker::draw_schedule() {
         int headsign_clipping_end = tx;
         int headsign_clipping_start = route_w + 3;
         int headsign_max_width = headsign_clipping_end - headsign_clipping_start;
+
+        if (headsign_max_width <= 0) continue;
+
         int headsign_overflow = headsign_w - headsign_max_width;
         
         static constexpr int min_scroll_threshold = 3;
@@ -691,9 +699,11 @@ void HOT TransitTracker::draw_schedule() {
     }
     
     // Draw headsign with clipping
-    this->display_->start_clipping(headsign_clipping_start, y_offset - 2, headsign_clipping_end, y_offset + nominal_font_height + 2);
-    this->display_->print(headsign_clipping_start - scroll_offset, y_offset, this->font_, row.primary_trip->headsign.c_str());
-    this->display_->end_clipping();
+    if (headsign_clipping_end > headsign_clipping_start) {
+      this->display_->start_clipping(headsign_clipping_start, y_offset - 2, headsign_clipping_end, y_offset + nominal_font_height + 2);
+      this->display_->print(headsign_clipping_start - scroll_offset, y_offset, this->font_, row.primary_trip->headsign.c_str());
+      this->display_->end_clipping();
+    }
     
     y_offset += nominal_font_height;
   }
