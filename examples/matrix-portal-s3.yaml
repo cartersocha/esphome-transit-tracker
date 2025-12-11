@@ -3,7 +3,7 @@ esphome:
   friendly_name: Transit Tracker
 
 esp32:
-  board: adafruit-matrixportal-esp32s3
+  board: esp32-s3-devkitc-1
   framework:
     type: arduino
 
@@ -76,28 +76,115 @@ time:
 color:
   - id: rapidride_red
     hex: "F50046"
+  - id: e_line_red
+    hex: "9C182F"
+  - id: route_44_purple
+    hex: "840AFD"
 
 transit_tracker:
   id: tracker
   base_url: "wss://tt.horner.tj/"
-  limit: 3
-  feed_code: "st"
+  limit: 12
+  #list_mode: "nextPerRoute"
+  #list_mode: "sequential"
+  list_mode: "doubleTime"
+  scroll_headsigns: true
+  show_units: "short"
+  #show_units: "long"
+  #show_units: "none"
   stops:
-    - stop_id: "1_71971" # Redmond Way & Bear Creek Pkwy
-      time_offset: -8min
+    - stop_id: "st:1_29557"
       routes:
-        - "1_100113" # 221
-        - "1_102704" # 250
-    - stop_id: "1_71961" # RTC
-      time_offset: -10min
+        - "st:1_100224"
+    - stop_id: "st:1_29231"
       routes:
-        - "1_102548" # B Line
+        - "st:1_100224"
+    - stop_id: "st:1_75408"
+      routes:
+        - "st:1_102615"
   styles:
-    - route_id: "1_102548"
-      name: "B"
-      color: rapidride_red
+    - route_id: "st:1_102615"
+      name: "E"
+      color: e_line_red
+    - route_id: "st:1_100224"
+      name: "44"
+      color: route_44_purple
   abbreviations:
-    - from: "Bellevue Transit Center Crossroads"
-      to: "Bellevue TC"
-    - from: "Transit Center"
-      to: "TC"
+    - from: "Seattle"
+      to: ""
+    - from: "Ballard Wallingford"
+      to: "Ballard - 46th & Stone"
+    - from: "University Of Washington Medical Center Wallingford"
+      to: "UW - 45th & Greenlake "
+    - from: "University District"
+      to: "UW - 45th & Greenlake "
+
+globals:
+  - id: display_brightness
+    type: int
+    restore_value: yes
+    initial_value: '150'
+
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
+          auto time = id(sntp_time).now();
+          if (!time.is_valid()) return;
+
+          int month = time.month;
+          int hour = time.hour;
+          int target_b = 75; // Default to half/night brightness (approx 50%)
+
+          // Oct (10) to Feb (2)
+          bool is_winter = (month >= 10 || month <= 2);
+
+          if (is_winter) {
+             // 9 am - 5 pm (17) -> Max
+             if (hour >= 9 && hour < 17) {
+               target_b = 150;
+             }
+          } else {
+             // Mar (3) to Sep (9)
+             // 8 am - 7 pm (19) -> Max
+             if (hour >= 8 && hour < 19) {
+               target_b = 150;
+             }
+          }
+
+          // Only update if changed to avoid overriding manual adjustments *too* aggressively,
+          // though this will still reset manual changes every minute if they differ from schedule.
+          if (id(display_brightness) != target_b) {
+            ESP_LOGD("automation", "Updating brightness to %d based on schedule", target_b);
+            id(display_brightness) = target_b;
+            id(matrix).set_brightness(target_b);
+          }
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: 6
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Button Up"
+    on_press:
+      - lambda: |-
+          int b = id(display_brightness);
+          b += 25;
+          if (b > 255) b = 255;
+          id(display_brightness) = b;
+          id(matrix).set_brightness(b);
+
+  - platform: gpio
+    pin:
+      number: 7
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Button Down"
+    on_press:
+      - lambda: |-
+          int b = id(display_brightness);
+          b -= 25;
+          if (b < 0) b = 0;
+          id(display_brightness) = b;
+          id(matrix).set_brightness(b);
