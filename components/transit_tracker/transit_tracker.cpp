@@ -548,39 +548,74 @@ void HOT TransitTracker::draw_schedule() {
   int start_idx = (this->page_index_ % num_pages) * items_per_page;
   int end_idx = std::min(start_idx + items_per_page, num_total_rows);
 
+  auto get_max_route_width = [&](int start, int end) -> int {
+    int max_w = 0;
+    for (int i = start; i < end; i++) {
+      int w, _, __;
+      this->font_->measure(this->display_rows_[i].primary_trip->route_name.c_str(), &w, &_, &_, &_);
+      if (w > max_w) max_w = w;
+    }
+    return max_w;
+  };
+
+  struct ColumnFormat {
+      int max_text_width = 0;
+      bool has_realtime = false;
+  };
+
+  auto get_column_formats = [&](int start, int end) -> std::vector<ColumnFormat> {
+    int times_to_draw = this->double_time_ ? 2 : 1;
+    std::vector<ColumnFormat> formats(times_to_draw);
+
+    for (int i = start; i < end; i++) {
+      const auto &row = this->display_rows_[i];
+      for (int j = 0; j < times_to_draw; j++) {
+        if (j < row.trips.size()) {
+          const Trip* t = row.trips[j];
+          std::string ts = this->from_now_(
+            this->display_departure_times_ ? t->departure_time : t->arrival_time,
+            rtc_now
+          );
+          int w, _, __;
+          this->font_->measure(ts.c_str(), &w, &_, &_, &_);
+          
+          if (w > formats[j].max_text_width) {
+              formats[j].max_text_width = w;
+          }
+          if (t->is_realtime) {
+              formats[j].has_realtime = true;
+          }
+        }
+      }
+    }
+    return formats;
+  };
+
   // Helper lambda to calculate scroll duration for a range of rows
   auto calc_scroll_duration = [&](int start, int end) -> int {
     if (!this->scroll_headsigns_) return 0;
     
+    int max_route_w = get_max_route_width(start, end);
+    auto col_formats = get_column_formats(start, end);
+    
+    int total_times_w = 0;
+    for (const auto& fmt : col_formats) {
+        if (fmt.max_text_width > 0) {
+            total_times_w += fmt.max_text_width + (fmt.has_realtime ? 8 : 0) + 2;
+        }
+    }
+    // Adjust for the last spacer if needed, or just keep simple. The previous logic summed widths.
+    // Let's match the drawing logic spacing.
+
     int largest_headsign_overflow = 0;
 
     for (int i = start; i < end; i++) {
         const auto &row = this->display_rows_[i];
-        int route_w, headsign_w, _, __;
-        this->font_->measure(row.primary_trip->route_name.c_str(), &route_w, &_, &_, &_);
+        int headsign_w, _, __;
         this->font_->measure(row.primary_trip->headsign.c_str(), &headsign_w, &_, &_, &_);
         
-        int tx = this->display_->get_width() + 1;
-        int times_to_draw = this->double_time_ ? 2 : 1;
-        for (int j = times_to_draw - 1; j >= 0; j--) {
-             if (j < row.trips.size()) {
-                 const Trip* t = row.trips[j];
-                 std::string ts = this->from_now_(
-                    this->display_departure_times_ ? t->departure_time : t->arrival_time,
-                    rtc_now
-                 );
-                 int tw = 0;
-                 this->font_->measure(ts.c_str(), &tw, &_, &_, &_);
-                 int item_width = tw;
-                 if (!this->double_time_ && t->is_realtime) {
-                     item_width += 8;
-                 }
-                 tx -= item_width + 2;
-             }
-        }
-        
-        int headsign_clipping_end = tx;
-        int headsign_clipping_start = route_w + 3;
+        int headsign_clipping_end = this->display_->get_width() - total_times_w; // simplified
+        int headsign_clipping_start = max_route_w + 3;
         int headsign_max_width = headsign_clipping_end - headsign_clipping_start;
 
         if (headsign_max_width <= 0) continue;
@@ -614,6 +649,16 @@ void HOT TransitTracker::draw_schedule() {
   
   int effective_scroll_duration = scroll_cycle_duration;
 
+  int current_max_route_width = get_max_route_width(start_idx, end_idx);
+  auto col_formats = get_column_formats(start_idx, end_idx);
+  
+  total_times_width = 0;
+  for (const auto& fmt : col_formats) {
+      if (fmt.max_text_width > 0) {
+          total_times_width += fmt.max_text_width + (fmt.has_realtime ? 8 : 0) + 2;
+      }
+  }
+
   // Calculate vertical centering
   int num_rows_on_page = end_idx - start_idx;
   int max_trips_height = num_rows_on_page * nominal_font_height - this->font_->get_descender();
@@ -625,47 +670,51 @@ void HOT TransitTracker::draw_schedule() {
     // Draw route name
     this->display_->print(0, y_offset, this->font_, row.primary_trip->route_color, display::TextAlign::TOP_LEFT, row.primary_trip->route_name.c_str());
     
-    int route_width;
-    int _, __;
-    this->font_->measure(row.primary_trip->route_name.c_str(), &route_width, &_, &_, &_);
+    // int route_width;
+    // int _, __;
+    // this->font_->measure(row.primary_trip->route_name.c_str(), &route_width, &_, &_, &_);
 
     // Draw times from right to left
     int time_x = this->display_->get_width() + 1;
     int times_to_draw = this->double_time_ ? 2 : 1;
+    
     for (int i = times_to_draw - 1; i >= 0; i--) {
-      std::string time_str;
-      Color color = Color(0xa7a7a7);
-      int width = 0; // Initialize with 0
-      int w = 0; 
-      
-      if (i < row.trips.size()) {
-        const Trip* t = row.trips[i];
-        time_str = this->from_now_(
-          this->display_departure_times_ ? t->departure_time : t->arrival_time,
-          rtc_now
-        );
-        color = t->is_realtime ? Color(0x20FF00) : Color(0xa7a7a7);
-        int _, __;
-        this->font_->measure(time_str.c_str(), &w, &_, &_, &_);
-        width = w; // Use actual width
-      }
-      
-      if (!time_str.empty()) {
-        this->display_->print(time_x, y_offset, this->font_, color, display::TextAlign::TOP_RIGHT, time_str.c_str());
-
-        if (!this->double_time_ && i < row.trips.size() && row.trips[i]->is_realtime) {
-           int icon_x = time_x - w - 8;
-           int icon_y = y_offset + nominal_font_height - 11;
-           this->draw_realtime_icon_(icon_x, icon_y, icon_frame);
-           width += 8;
+        const auto& fmt = col_formats[i];
+        if (fmt.max_text_width == 0) continue; // Skip empty columns? Or should we reserve space?
+        
+        // Calculate the width of this column
+        int col_width = fmt.max_text_width + (fmt.has_realtime ? 8 : 0);
+        
+        // We draw text left-aligned to ensure consistent distance from icon
+        
+        if (i < row.trips.size()) {
+            const Trip* t = row.trips[i];
+            std::string time_str = this->from_now_(
+              this->display_departure_times_ ? t->departure_time : t->arrival_time,
+              rtc_now
+            );
+            Color color = t->is_realtime ? Color(0x20FF00) : Color(0xa7a7a7);
+            
+            // Align text to the left of the column's text area
+            // This ensures consistent distance from the icon (if present)
+            int text_x = time_x - fmt.max_text_width;
+            
+            this->display_->print(text_x, y_offset, this->font_, color, display::TextAlign::TOP_LEFT, time_str.c_str());
+            
+            if (t->is_realtime) {
+               int icon_x = text_x - 8;
+               int icon_y = y_offset + nominal_font_height - 11;
+               this->draw_realtime_icon_(icon_x, icon_y, icon_frame);
+            }
         }
-        time_x -= width + 2;
-      }
+        
+        time_x -= (col_width + 2);
     }
     
     // Calculate headsign clipping area - must match scroll calculation exactly
-    int headsign_clipping_start = route_width + 3;
-    int headsign_clipping_end = time_x; // Use actual end position
+    int headsign_clipping_start = current_max_route_width + 3;
+    // Use the max times width to define the consistent right edge for headsigns
+    int headsign_clipping_end = this->display_->get_width() - total_times_width; 
     int headsign_max_width = headsign_clipping_end - headsign_clipping_start;
     
     int headsign_actual_width;

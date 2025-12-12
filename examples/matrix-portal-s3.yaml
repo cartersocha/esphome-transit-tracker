@@ -24,8 +24,8 @@ ota:
     password: ""
 
 wifi:
-  ssid: "${wifi_ssid}"
-  password: "${wifi_password}"
+  ssid: ""
+  password: ""
   power_save_mode: "NONE"
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
@@ -113,11 +113,11 @@ transit_tracker:
     - from: "Seattle"
       to: ""
     - from: "Ballard Wallingford"
-      to: "Ballard - 46th & Stone"
+      to: "Ballard"
     - from: "University Of Washington Medical Center Wallingford"
-      to: "UW - 45th & Greenlake "
+      to: "UW"
     - from: "University District"
-      to: "UW - 45th & Greenlake "
+      to: "UW"
 
 globals:
   - id: display_brightness
@@ -134,7 +134,7 @@ interval:
 
           int month = time.month;
           int hour = time.hour;
-          int target_b = 75; // Default to half/night brightness (approx 50%)
+          int target_b = 50; // Default to half/night brightness (approx 50%)
 
           // Oct (10) to Feb (2)
           bool is_winter = (month >= 10 || month <= 2);
@@ -142,13 +142,13 @@ interval:
           if (is_winter) {
              // 9 am - 5 pm (17) -> Max
              if (hour >= 9 && hour < 17) {
-               target_b = 150;
+               target_b = 125;
              }
           } else {
              // Mar (3) to Sep (9)
              // 8 am - 7 pm (19) -> Max
              if (hour >= 8 && hour < 19) {
-               target_b = 150;
+               target_b = 125;
              }
           }
 
