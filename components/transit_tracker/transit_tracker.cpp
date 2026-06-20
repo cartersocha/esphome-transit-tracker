@@ -290,7 +290,7 @@ void TransitTracker::handle_message_(const std::string &payload) {
       }
 
       // stopId may be absent on older server versions; default to empty
-      std::string stop_id = trip.containsKey("stopId") ? trip["stopId"].as<std::string>() : "";
+      std::string stop_id = !trip["stopId"].isNull() ? trip["stopId"].as<std::string>() : "";
 
       new_trips.push_back({
         .route_id = route_id,
