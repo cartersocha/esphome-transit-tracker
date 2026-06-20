@@ -1,16 +1,20 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components.http_request import CONF_HTTP_REQUEST_ID, HttpRequestComponent
 from esphome.components.display import Display
 from esphome.components.font import Font
 from esphome.components.time import RealTimeClock
 from esphome.components import color
 from esphome.const import CONF_ID, CONF_DISPLAY_ID, CONF_TIME_ID, CONF_SHOW_UNITS, __version__ as ESPHOME_VERSION
+from esphome.types import ConfigType
+from esphome.components import esp32
+from esphome.components.esp32 import (
+    add_idf_component,
+)
 
-_MINIMUM_ESPHOME_VERSION = "2025.7.0"
+_MINIMUM_ESPHOME_VERSION = "2025.11.0"
 
-DEPENDENCIES = ["network"]
-AUTO_LOAD = ["json", "watchdog"]
+DEPENDENCIES = ["network", "display", "font", "time", "esp32"]
+AUTO_LOAD = ["json"]
 
 transit_tracker_ns = cg.esphome_ns.namespace("transit_tracker")
 TransitTracker = transit_tracker_ns.class_("TransitTracker", cg.Component)
@@ -31,9 +35,11 @@ CONF_ABBREVIATIONS = "abbreviations"
 CONF_STYLES = "styles"
 CONF_FEED_CODE = "feed_code"
 CONF_DEFAULT_ROUTE_COLOR = "default_route_color"
+CONF_REALTIME_COLOR = "realtime_color"
 CONF_TIME_DISPLAY = "time_display"
 CONF_LIST_MODE = "list_mode"
 CONF_SCROLL_HEADSIGNS = "scroll_headsigns"
+CONF_HEADERS = "headers"
 
 
 def validate_ws_url(value):
@@ -53,8 +59,22 @@ def validate_esphome_version(obj):
     return obj
 
 
+def _consume_transit_tracker_sockets(config: ConfigType) -> ConfigType:
+    """Register socket needs for transit_tracker component."""
+    from esphome.components import socket
+    socket.consume_sockets(1, "transit_tracker")(config)
+    return config
+
+
+COLOR_SCHEMA = cv.All(
+    cv.requires_component("color"),
+    cv.use_id(color.ColorStruct)
+)
+
+
 CONFIG_SCHEMA = cv.All(
     validate_esphome_version,
+    cv.only_on_esp32,
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(TransitTracker),
@@ -81,13 +101,14 @@ CONFIG_SCHEMA = cv.All(
                 )
             ),
             cv.Optional(CONF_SHOW_UNITS, default="long"): cv.enum(UNIT_DISPLAY_VALUES),
-            cv.Optional(CONF_DEFAULT_ROUTE_COLOR): cv.use_id(color.ColorStruct),
+            cv.Optional(CONF_DEFAULT_ROUTE_COLOR): COLOR_SCHEMA,
+            cv.Optional(CONF_REALTIME_COLOR): COLOR_SCHEMA,
             cv.Optional(CONF_STYLES): cv.ensure_list(
                 cv.Schema(
                     {
                         cv.Required("route_id"): cv.string,
                         cv.Required("name"): cv.string,
-                        cv.Required("color"): cv.use_id(color.ColorStruct),
+                        cv.Required("color"): COLOR_SCHEMA,
                     }
                 )
             ),
@@ -99,8 +120,17 @@ CONFIG_SCHEMA = cv.All(
                     }
                 )
             ),
+            cv.Optional(CONF_HEADERS): cv.ensure_list(
+                cv.Schema(
+                    {
+                        cv.Required("name"): cv.string,
+                        cv.Required("value"): cv.string,
+                    }
+                )
+            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
+    _consume_transit_tracker_sockets,
 )
 
 
@@ -150,6 +180,10 @@ async def to_code(config):
 
     cg.add(var.set_unit_display(config[CONF_SHOW_UNITS]))
 
+    if CONF_HEADERS in config:
+        for header in config[CONF_HEADERS]:
+            cg.add(var.add_header(header["name"], header["value"]))
+
     if CONF_ABBREVIATIONS in config:
         for abbreviation in config[CONF_ABBREVIATIONS]:
             cg.add(var.add_abbreviation(abbreviation["from"], abbreviation["to"]))
@@ -161,6 +195,13 @@ async def to_code(config):
             )
         )
 
+    if CONF_REALTIME_COLOR in config:
+        cg.add(
+            var.set_realtime_color(
+                await cg.get_variable(config[CONF_REALTIME_COLOR])
+            )
+        )
+
     if CONF_STYLES in config:
         for style in config[CONF_STYLES]:
             color_struct = await cg.get_variable(style["color"])
@@ -168,10 +209,9 @@ async def to_code(config):
 
     await cg.register_component(var, config)
 
-    cg.add_library("NetworkClientSecure", None)
-    cg.add_library("HTTPClient", None)
-
-    # Fork contains patch for TLS issue - https://github.com/gilmaimon/ArduinoWebsockets/pull/142
-    cg.add_library(
-        "ArduinoWebsockets", None, "https://github.com/tjhorner/ArduinoWebsockets"
+    add_idf_component(
+        name="espressif/esp_websocket_client",
+        ref="1.7.0",
     )
+
+    esp32.add_idf_sdkconfig_option("CONFIG_MBEDTLS_CERTIFICATE_BUNDLE", True)
