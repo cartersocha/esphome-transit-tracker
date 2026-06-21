@@ -1,6 +1,8 @@
 esphome:
   name: transit-tracker-s3
   friendly_name: Transit Tracker
+  # hub75 PR #13921 (runtime set_rotation) requires a recent esphome
+  min_version: 2026.5.3
 
 esp32:
   variant: esp32s3
@@ -17,6 +19,13 @@ external_components:
   - source:
       type: local
       path: ../components
+  # hub75 with runtime set_rotation() support (esphome PR #13921 — not in stable yet)
+  - source: github://pr#13921
+    components: [ hub75 ]
+    refresh: 1h
+  # LIS3DH accelerometer driver (provides the orientation_xy text sensor)
+  - source: github://tjhorner/esphome-custom-components@157c1c216ab296fd2cecc197728f9cbb909344d3
+    components: [ lis3dh ]
 
 logger:
   level: DEBUG
@@ -44,6 +53,7 @@ display:
     board: adafruit-matrix-portal-s3
     double_buffer: true
     update_interval: 32ms
+    clock_speed: 16MHz
     panel_width: 64
     panel_height: 32
     layout_cols: 2
@@ -69,6 +79,32 @@ time:
   - platform: sntp
     id: sntp_time
     timezone: America/Los_Angeles
+
+# --- Auto display orientation (onboard LIS3DH accelerometer) ---
+# Mirrors the Transit Tracker product: read the accelerometer and rotate the
+# matrix 0deg/180deg so the display stays upright however the unit is mounted.
+i2c:
+  sda: GPIO16
+  scl: GPIO17
+
+lis3dh:
+  range: 2G
+  data_rate: 1HZ
+  resolution: HIGH_RES
+  address: 0x19
+  update_interval: 1s
+
+text_sensor:
+  - platform: lis3dh
+    orientation_xy:
+      id: orientation_sensor
+      on_value:
+        - lambda: |-
+            if (x == "Portrait Upside Down") {
+              id(matrix).set_rotation(esphome::display::DisplayRotation::DISPLAY_ROTATION_180_DEGREES);
+            } else if (x == "Portrait Upright") {
+              id(matrix).set_rotation(esphome::display::DisplayRotation::DISPLAY_ROTATION_0_DEGREES);
+            }
 
 color:
   - id: route_44_purple
