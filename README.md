@@ -26,7 +26,9 @@ You will need these components in your configuration:
 - [Font](https://esphome.io/components/font/)
 - [Time](https://esphome.io/components/time/)
 
-Then you can define an instance of the component like so (this is a complete example; most parameters are optional, and defaults are shown here):
+Then you can define an instance of the component in your YAML configuration. The easiest way to generate the configuration is with the [configurator tool](https://transit-tracker.eastsideurbanism.org/configurator). Once you've set the options you want, press "Generate YAML" at the bottom and paste the generated text into your configuration.
+
+Here is is a complete example; most parameters are optional:
 
 ```yaml
 transit_tracker:
@@ -34,6 +36,11 @@ transit_tracker:
 
   # Base URL of the Transit Tracker API
   base_url: "wss://tt.horner.tj/"
+
+  # Additional headers to send in the HTTP request
+  headers:
+    - name: "X-Hello"
+      value: "world"
 
   # The feed code of the transit agency you want to track (optional)
   feed_code: "st"
@@ -52,6 +59,9 @@ transit_tracker:
   # Default color for route names
   # (See https://esphome.io/components/display/#color)
   default_route_color: my_favorite_color
+
+  # Color for real-time indicator icon and text
+  realtime_color: my_second_favorite_color
 
   # How to display the duration units.
   # Examples:

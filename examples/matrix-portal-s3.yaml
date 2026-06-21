@@ -1,14 +1,19 @@
 esphome:
-  name: transit-tracker
+  name: transit-tracker-s3
   friendly_name: Transit Tracker
 
 esp32:
-  board: adafruit-matrixportal-esp32s3
+  variant: esp32s3
+  flash_size: 8MB
+  cpu_frequency: 240MHz
   framework:
-    type: arduino
+    type: esp-idf
+
+psram:
+  mode: quad
+  speed: 80MHz
 
 external_components:
-  - source: github://TillFleisch/ESPHome-HUB75-MatrixDisplayWrapper@main
   - source:
       type: local
       path: ../components
@@ -24,8 +29,8 @@ ota:
     password: ""
 
 wifi:
-  ssid: ""
-  password: ""
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
   power_save_mode: "NONE"
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
@@ -34,28 +39,20 @@ wifi:
     password: "59541bEJiaf3"
 
 display:
-  - platform: hub75_matrix_display
+  - platform: hub75
     id: matrix
-    width: 64
-    height: 32
-    chain_length: 2
-    R1_pin: 42
-    G1_pin: 40
-    B1_pin: 41
-    R2_pin: 38
-    G2_pin: 37
-    B2_pin: 39
-    A_pin: 45
-    B_pin: 36
-    C_pin: 48
-    D_pin: 35
-    E_pin: 21
-    LAT_pin: 47
-    OE_pin: 14
-    CLK_pin: 2
-    clock_phase: false
-    i2sspeed: HZ_10M
-    latch_blanking: 4
+    board: adafruit-matrix-portal-s3
+    double_buffer: true
+    update_interval: 32ms
+    panel_width: 64
+    panel_height: 32
+    layout_cols: 2
+    # We swap the G and B channels in firmware because the 64x32 panel hardware has them reversed
+    g1_pin: 40
+    b1_pin: 41
+    g2_pin: 37
+    b2_pin: 39
+    e_pin: 21
     brightness: 255
     lambda: |-
       id(tracker).draw_schedule();
@@ -74,30 +71,42 @@ time:
     timezone: America/Los_Angeles
 
 color:
-  - id: rapidride_red
-    hex: "F50046"
+  - id: route_44_purple
+    hex: "840AFD"
+  - id: e_line_red
+    hex: "9C182F"
 
 transit_tracker:
   id: tracker
   base_url: "wss://tt.horner.tj/"
-  limit: 3
+  limit: 12
   feed_code: "st"
+  list_mode: "doubleTime"
+  scroll_headsigns: true
+  show_units: "short"
   stops:
-    - stop_id: "1_71971" # Redmond Way & Bear Creek Pkwy
-      time_offset: -8min
+    - stop_id: "1_29557" # Route 44 @ UW
       routes:
-        - "1_100113" # 221
-        - "1_102704" # 250
-    - stop_id: "1_71961" # RTC
-      time_offset: -10min
+        - "1_100224" # 44
+    - stop_id: "1_29231" # Route 44 @ Ballard
       routes:
-        - "1_102548" # B Line
+        - "1_100224" # 44
+    - stop_id: "1_75408" # E Line @ Downtown
+      routes:
+        - "1_102615" # E Line
   styles:
-    - route_id: "1_102548"
-      name: "B"
-      color: rapidride_red
+    - route_id: "1_100224"
+      name: "44"
+      color: route_44_purple
+    - route_id: "1_102615"
+      name: "E"
+      color: e_line_red
   abbreviations:
-    - from: "Bellevue Transit Center Crossroads"
-      to: "Bellevue TC"
-    - from: "Transit Center"
-      to: "TC"
+    - from: "Seattle"
+      to: ""
+    - from: "Ballard Wallingford"
+      to: "Ballard"
+    - from: "University Of Washington Medical Center Wallingford"
+      to: "UW"
+    - from: "University District"
+      to: "UW"
