@@ -21,4 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # secrets.yaml is git-ignored (holds real wifi creds); provide throwaway
+      # values so the example's !secret references resolve during the CI compile.
+      - name: Create placeholder secrets for CI build
+        run: printf 'wifi_ssid: "ci-build"\nwifi_password: "ci-build-password"\n' > examples/secrets.yaml
+
       - run: esphome compile ${{ matrix.variant }}.yaml
