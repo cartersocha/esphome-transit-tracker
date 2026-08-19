@@ -50,6 +50,41 @@ static bool parse_hex_color(const std::string &str, uint32_t &out) {
   return true;
 }
 
+// Hand-drawn bold W: Pixolletta's W has 1px inner gaps that clog when text is
+// bolded by double-printing, so bold text draws this bitmap instead. Rows 0-7
+// span the cap height; lowercase w uses rows 2-7.
+static const char *const BOLD_W_BITMAP[8] = {
+  "##.....##",
+  "##.....##",
+  "##..#..##",
+  "##..#..##",
+  "##..#..##",
+  "##..#..##",
+  ".#######.",
+  "..##.##..",
+};
+static constexpr int BOLD_W_WIDTH = 9;
+
+// Hand-drawn chunky E (2px strokes) to match the bold weight; Pixolletta's E
+// stays puny even when double-printed. Uppercase only.
+static const char *const BOLD_E_BITMAP[8] = {
+  "#######",
+  "##.....",
+  "##.....",
+  "######.",
+  "##.....",
+  "##.....",
+  "##.....",
+  "#######",
+};
+static constexpr int BOLD_E_WIDTH = 7;
+
+// White text for most badge colors; black when the background is too light for white to read
+static Color badge_text_color(const Color &bg) {
+  int luma = (299 * bg.r + 587 * bg.g + 114 * bg.b) / 1000;
+  return luma > 160 ? Color(0x000000) : Color(0xFFFFFF);
+}
+
 void TransitTracker::setup() {
   this->ws_client_.set_on_message([this](const std::string &payload) {
     this->handle_message_(payload);
@@ -266,6 +301,10 @@ void TransitTracker::handle_message_(const std::string &payload) {
           headsign.replace(pos, abbr.first.length(), abbr.second);
         }
       }
+      // Trim whitespace (from the feed or abbreviations) so invisible characters
+      // don't inflate the measured width and trigger needless scrolling
+      headsign.erase(0, headsign.find_first_not_of(' '));
+      headsign.erase(headsign.find_last_not_of(' ') + 1);
 
       auto route_id = trip["routeId"].as<std::string>();
       auto route_style = this->route_styles_.find(route_id);
@@ -481,12 +520,86 @@ void HOT TransitTracker::draw_schedule() {
   int start_idx = (this->page_index_ % num_pages) * items_per_page;
   int end_idx = std::min(start_idx + items_per_page, num_total_rows);
 
+  // Route names sit on a filled badge in the route color; badge width is shared
+  // across visible rows so the headsigns start at a fixed column
+  static constexpr int badge_pad_x = 2;
+
+  // Bold rendering: every glyph is double-printed with a 1px horizontal offset
+  // and advanced 1px extra so thickened glyphs don't collide with their
+  // neighbors (e.g. "rd"). measure_bold mirrors this width math and must be
+  // used wherever bold text is measured.
+  auto next_glyph = [](const char *&p, char (&buf)[5]) {
+    unsigned char c = (unsigned char) *p;
+    int len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+    for (int i = 0; i < 5; i++) buf[i] = 0;
+    for (int i = 0; i < len && p[i] != '\0'; i++) buf[i] = p[i];
+    p += len;
+  };
+
+  auto measure_bold = [&](const char *text) -> int {
+    int total = 0, w, a, b;
+    char buf[5];
+    for (const char *p = text; *p != '\0';) {
+      next_glyph(p, buf);
+      if (buf[0] == 'W' || buf[0] == 'w') {
+        total += BOLD_W_WIDTH + 1;
+        continue;
+      }
+      if (buf[0] == 'E') {
+        total += BOLD_E_WIDTH + 1;
+        continue;
+      }
+      this->font_->measure(buf, &w, &a, &a, &b);
+      total += w + 1;
+    }
+    return total;
+  };
+
+  auto print_bold = [&](int x, int y, Color color, display::TextAlign align, const char *text) {
+    if (align == display::TextAlign::TOP_RIGHT) {
+      x -= measure_bold(text);
+    }
+    int cx = x, w, a, b;
+    char buf[5];
+    for (const char *p = text; *p != '\0';) {
+      next_glyph(p, buf);
+      if (buf[0] == 'W' || buf[0] == 'w') {
+        int start_row = buf[0] == 'W' ? 0 : 2;
+        for (int ry = start_row; ry < 8; ry++) {
+          // Lowercase w starts at the x-height with a plain-stem top row
+          int src = (buf[0] == 'w' && ry == start_row) ? 0 : ry;
+          for (int rx = 0; rx < BOLD_W_WIDTH; rx++) {
+            if (BOLD_W_BITMAP[src][rx] == '#') {
+              this->display_->draw_pixel_at(cx + rx, y + ry, color);
+            }
+          }
+        }
+        cx += BOLD_W_WIDTH + 1;
+        continue;
+      }
+      if (buf[0] == 'E') {
+        for (int ry = 0; ry < 8; ry++) {
+          for (int rx = 0; rx < BOLD_E_WIDTH; rx++) {
+            if (BOLD_E_BITMAP[ry][rx] == '#') {
+              this->display_->draw_pixel_at(cx + rx, y + ry, color);
+            }
+          }
+        }
+        cx += BOLD_E_WIDTH + 1;
+        continue;
+      }
+      this->display_->print(cx, y, this->font_, color, display::TextAlign::TOP_LEFT, buf);
+      this->display_->print(cx + 1, y, this->font_, color, display::TextAlign::TOP_LEFT, buf);
+      this->font_->measure(buf, &w, &a, &a, &b);
+      cx += w + 1;
+    }
+  };
+
   // Widest route badge across the visible rows -> every headsign starts at a fixed column
   auto get_max_route_width = [&](int start, int end) -> int {
     int max_w = 0;
     for (int i = start; i < end; i++) {
-      int w, a, b;
-      this->font_->measure(this->display_rows_[i].primary_trip->route_name.c_str(), &w, &a, &a, &b);
+      int w = measure_bold(this->display_rows_[i].primary_trip->route_name.c_str());
       if (w > max_w) max_w = w;
     }
     return max_w;
@@ -512,8 +625,7 @@ void HOT TransitTracker::draw_schedule() {
             this->display_departure_times_ ? t->departure_time : t->arrival_time,
             rtc_now
           );
-          int w, a, b;
-          this->font_->measure(ts.c_str(), &w, &a, &a, &b);
+          int w = measure_bold(ts.c_str());
 
           if (w > formats[j].max_text_width) {
               formats[j].max_text_width = w;
@@ -537,7 +649,7 @@ void HOT TransitTracker::draw_schedule() {
     int total_times_w = 0;
     for (const auto& fmt : col_formats) {
         if (fmt.max_text_width > 0) {
-            total_times_w += fmt.max_text_width + (fmt.has_realtime ? 8 : 0) + 2;
+            total_times_w += fmt.max_text_width + 2;
         }
     }
 
@@ -545,11 +657,12 @@ void HOT TransitTracker::draw_schedule() {
 
     for (int i = start; i < end; i++) {
         const auto &row = this->display_rows_[i];
-        int headsign_w, a, b;
-        this->font_->measure(row.primary_trip->headsign.c_str(), &headsign_w, &a, &a, &b);
+        // -1: the last glyph's tracking pixel is never inked, so it shouldn't
+        // count toward overflow and trigger scrolling
+        int headsign_w = measure_bold(row.primary_trip->headsign.c_str()) - 1;
 
-        int headsign_clipping_end = this->display_->get_width() - total_times_w;
-        int headsign_clipping_start = max_route_w + 3;
+        int headsign_clipping_end = this->display_->get_width() - total_times_w + 1;
+        int headsign_clipping_start = max_route_w + 2 * badge_pad_x + 2;
         int headsign_max_width = headsign_clipping_end - headsign_clipping_start;
 
         if (headsign_max_width <= 0) continue;
@@ -589,20 +702,32 @@ void HOT TransitTracker::draw_schedule() {
   total_times_width = 0;
   for (const auto& fmt : col_formats) {
       if (fmt.max_text_width > 0) {
-          total_times_width += fmt.max_text_width + (fmt.has_realtime ? 8 : 0) + 2;
+          total_times_width += fmt.max_text_width + 2;
       }
   }
 
   // Calculate vertical centering
   int num_rows_on_page = end_idx - start_idx;
-  int max_trips_height = num_rows_on_page * nominal_font_height - this->font_->get_descender();
+  // Badges fill each row's full slot height, so center the full block (no
+  // descender subtraction, which would push everything down)
+  int max_trips_height = num_rows_on_page * nominal_font_height;
   int y_offset = (this->display_->get_height() - max_trips_height) / 2;
   if (y_offset < 0) y_offset = 0;
 
+  int badge_width = current_max_route_width + 2 * badge_pad_x;
+
   for (int idx = start_idx; idx < end_idx; idx++) {
     const auto &row = this->display_rows_[idx];
-    // Draw route name
-    this->display_->print(0, y_offset, this->font_, row.primary_trip->route_color, display::TextAlign::TOP_LEFT, row.primary_trip->route_name.c_str());
+    // Draw route badge: filled rect in the route color, name knocked out on top.
+    // Full slot height so consecutive badges tile with no gaps. Text is nudged
+    // 1px down so it sits centered in the badge instead of hugging its top.
+    // The fill is dimmed to 60% so the full-brightness text pops against it
+    // while keeping enough current through the LEDs for decent color mixing.
+    const Color &route_color = row.primary_trip->route_color;
+    Color badge_color(route_color.r * 6 / 10, route_color.g * 6 / 10, route_color.b * 6 / 10);
+    int text_y = y_offset + 1;
+    this->display_->filled_rectangle(0, y_offset, badge_width, nominal_font_height, badge_color);
+    print_bold(badge_width - badge_pad_x + 2, text_y, badge_text_color(badge_color), display::TextAlign::TOP_RIGHT, row.primary_trip->route_name.c_str());
 
     // Draw times from right to left in fixed-width columns so they line up
     int time_x = this->display_->get_width() + 1;
@@ -612,7 +737,7 @@ void HOT TransitTracker::draw_schedule() {
         const auto& fmt = col_formats[i];
         if (fmt.max_text_width == 0) continue;
 
-        int col_width = fmt.max_text_width + (fmt.has_realtime ? 8 : 0);
+        int col_width = fmt.max_text_width;
 
         if (i < (int) row.trips.size()) {
             const Trip* t = row.trips[i];
@@ -622,29 +747,24 @@ void HOT TransitTracker::draw_schedule() {
             );
             Color color = t->is_realtime ? this->realtime_color_ : Color(0xa7a7a7);
 
-            // Left-align text within the column for a consistent gap from the icon
+            // Left-align text within the column; realtime is indicated by the
+            // green color alone (no icon) to save horizontal space
             int text_x = time_x - fmt.max_text_width;
 
-            this->display_->print(text_x, y_offset, this->font_, color, display::TextAlign::TOP_LEFT, time_str.c_str());
-
-            if (t->is_realtime) {
-               int icon_x = text_x - 8;
-               int icon_y = y_offset + nominal_font_height - 11;
-               this->draw_realtime_icon_(icon_x, icon_y, icon_frame);
-            }
+            print_bold(text_x, text_y, color, display::TextAlign::TOP_LEFT, time_str.c_str());
         }
 
         time_x -= (col_width + 2);
     }
 
     // Calculate headsign clipping area - must match scroll calculation exactly
-    int headsign_clipping_start = current_max_route_width + 3;
+    int headsign_clipping_start = badge_width + 2;
     // Use the max times width to define the consistent right edge for headsigns
-    int headsign_clipping_end = this->display_->get_width() - total_times_width;
+    int headsign_clipping_end = this->display_->get_width() - total_times_width + 1;
     int headsign_max_width = headsign_clipping_end - headsign_clipping_start;
 
-    int headsign_actual_width;
-    this->font_->measure(row.primary_trip->headsign.c_str(), &headsign_actual_width, &_, &_, &_);
+    // -1: matches the scroll calculation; the trailing tracking pixel is not inked
+    int headsign_actual_width = measure_bold(row.primary_trip->headsign.c_str()) - 1;
 
     int headsign_overflow = headsign_actual_width - headsign_max_width;
 
@@ -676,7 +796,7 @@ void HOT TransitTracker::draw_schedule() {
     // Draw headsign with clipping
     if (headsign_clipping_end > headsign_clipping_start) {
       this->display_->start_clipping(headsign_clipping_start, y_offset - 2, headsign_clipping_end, y_offset + nominal_font_height + 2);
-      this->display_->print(headsign_clipping_start - scroll_offset, y_offset, this->font_, row.primary_trip->headsign.c_str());
+      print_bold(headsign_clipping_start - scroll_offset, text_y, Color(0xFFFFFF), display::TextAlign::TOP_LEFT, row.primary_trip->headsign.c_str());
       this->display_->end_clipping();
     }
 

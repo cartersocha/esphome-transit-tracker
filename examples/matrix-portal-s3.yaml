@@ -107,10 +107,12 @@ text_sensor:
             }
 
 color:
+  # Warmer/brighter shades chosen to survive the badge dimming with balanced
+  # R/G/B mixing on the LED panel
   - id: route_44_purple
-    hex: "840AFD"
+    hex: "9B30D0"
   - id: e_line_red
-    hex: "9C182F"
+    hex: "C0202F"
 
 transit_tracker:
   id: tracker
@@ -138,7 +140,7 @@ transit_tracker:
       name: "E"
       color: e_line_red
   abbreviations:
-    - from: "Seattle"
+    - from: " Seattle"
       to: ""
     - from: "Ballard Wallingford"
       to: "Ballard"
