@@ -112,13 +112,8 @@ class TransitTracker : public Component {
     bool scroll_headsigns_ = false;
     bool double_time_ = false;
 
-    // Cached scroll state to prevent mid-cycle jumps
-    unsigned long scroll_cycle_start_ = 0;
-
-    // Pagination
-    int page_index_ = 0;
-    unsigned long last_page_change_ = 0;
-    static constexpr int items_per_page = 3;
+    // Rows that fit on the panel; anything past this is not drawn
+    static constexpr int max_visible_rows = 3;
 
     Color realtime_color_ = Color(0x20FF00);
     Color realtime_color_dark_ = Color(0x00A700);

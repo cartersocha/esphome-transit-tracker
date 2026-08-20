@@ -504,15 +504,8 @@ void HOT TransitTracker::draw_schedule() {
   int total_times_width = 0;
 
   int num_total_rows = this->display_rows_.size();
-  int num_pages = (num_total_rows + items_per_page - 1) / items_per_page;
-  if (num_pages < 1) num_pages = 1;
-
-  if (!this->double_time_) {
-    this->page_index_ = 0;
-  }
-
-  int start_idx = (this->page_index_ % num_pages) * items_per_page;
-  int end_idx = std::min(start_idx + items_per_page, num_total_rows);
+  int start_idx = 0;
+  int end_idx = std::min(max_visible_rows, num_total_rows);
 
   // Route names sit on a filled badge in the route color; badge width is shared
   // across visible rows so the headsigns start at a fixed column
@@ -675,20 +668,7 @@ void HOT TransitTracker::draw_schedule() {
     return 0;
   };
 
-  int scroll_cycle_duration = calc_scroll_duration(start_idx, end_idx);
-  int page_dwell = std::max(5000, scroll_cycle_duration);
-
-  if (this->double_time_ && uptime - this->last_page_change_ > (unsigned long)page_dwell) {
-      this->page_index_ = (this->page_index_ + 1) % num_pages;
-      this->last_page_change_ = uptime;
-      this->scroll_cycle_start_ = uptime;
-
-      start_idx = (this->page_index_ % num_pages) * items_per_page;
-      end_idx = std::min(start_idx + items_per_page, num_total_rows);
-      scroll_cycle_duration = calc_scroll_duration(start_idx, end_idx);
-  }
-
-  int effective_scroll_duration = scroll_cycle_duration;
+  int effective_scroll_duration = calc_scroll_duration(start_idx, end_idx);
 
   int current_max_route_width = get_max_route_width(start_idx, end_idx);
   auto col_formats = get_column_formats(start_idx, end_idx);
@@ -789,7 +769,7 @@ void HOT TransitTracker::draw_schedule() {
     int scroll_offset = 0;
     if (headsign_overflow > 0 && effective_scroll_duration > 0) {
       int scroll_time = headsign_overflow * 1000 / scroll_speed;
-      int scroll_cycle_time = (uptime - this->scroll_cycle_start_) % effective_scroll_duration;
+      int scroll_cycle_time = uptime % effective_scroll_duration;
 
       if (scroll_cycle_time < idle_time_left) {
         // Idle left
