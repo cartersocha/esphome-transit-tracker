@@ -79,12 +79,6 @@ static const char *const BOLD_E_BITMAP[8] = {
 };
 static constexpr int BOLD_E_WIDTH = 7;
 
-// White text for most badge colors; black when the background is too light for white to read
-static Color badge_text_color(const Color &bg) {
-  int luma = (299 * bg.r + 587 * bg.g + 114 * bg.b) / 1000;
-  return luma > 160 ? Color(0x000000) : Color(0xFFFFFF);
-}
-
 void TransitTracker::setup() {
   this->ws_client_.set_on_message([this](const std::string &payload) {
     this->handle_message_(payload);
@@ -718,16 +712,33 @@ void HOT TransitTracker::draw_schedule() {
 
   for (int idx = start_idx; idx < end_idx; idx++) {
     const auto &row = this->display_rows_[idx];
-    // Draw route badge: filled rect in the route color, name knocked out on top.
-    // Full slot height so consecutive badges tile with no gaps. Text is nudged
-    // 1px down so it sits centered in the badge instead of hugging its top.
-    // The fill is dimmed to 60% so the full-brightness text pops against it
-    // while keeping enough current through the LEDs for decent color mixing.
+    // Draw route badge: filled rect in the route color, name knocked out on top
+    // in white. Full slot height so consecutive badges tile with no gaps. Text
+    // is nudged 1px down so it sits centered in the badge instead of hugging
+    // its top. The fill is normalized to full brightness (strongest channel
+    // scaled to 255, preserving hue) so dark agency colors like purple/red
+    // stay visible through tinted acrylic in sunlight, then dimmed so the
+    // white text pops. Hues that are perceptually dim even at full drive
+    // (purple/red/blue: luma < 128) get 80% instead of 70% to balance against
+    // brighter neighbors.
     const Color &route_color = row.primary_trip->route_color;
-    Color badge_color(route_color.r * 6 / 10, route_color.g * 6 / 10, route_color.b * 6 / 10);
+    uint8_t max_ch = std::max({route_color.r, route_color.g, route_color.b});
+    Color badge_color;
+    if (max_ch > 0) {
+      int r = (int) route_color.r * 255 / max_ch;
+      int g = (int) route_color.g * 255 / max_ch;
+      int b = (int) route_color.b * 255 / max_ch;
+      int luma = (299 * r + 587 * g + 114 * b) / 1000;
+      int dim = luma < 128 ? 8 : 7;
+      badge_color = Color(
+        (uint8_t) (r * dim / 10),
+        (uint8_t) (g * dim / 10),
+        (uint8_t) (b * dim / 10)
+      );
+    }
     int text_y = y_offset + 1;
     this->display_->filled_rectangle(0, y_offset, badge_width, nominal_font_height, badge_color);
-    print_bold(badge_width - badge_pad_x + 2, text_y, badge_text_color(badge_color), display::TextAlign::TOP_RIGHT, row.primary_trip->route_name.c_str());
+    print_bold(badge_width - badge_pad_x + 2, text_y, Color(0xFFFFFF), display::TextAlign::TOP_RIGHT, row.primary_trip->route_name.c_str());
 
     // Draw times from right to left in fixed-width columns so they line up
     int time_x = this->display_->get_width() + 1;
@@ -745,7 +756,7 @@ void HOT TransitTracker::draw_schedule() {
               this->display_departure_times_ ? t->departure_time : t->arrival_time,
               rtc_now
             );
-            Color color = t->is_realtime ? this->realtime_color_ : Color(0xa7a7a7);
+            Color color = t->is_realtime ? this->realtime_color_ : Color(0xB07800);
 
             // Left-align text within the column; realtime is indicated by the
             // green color alone (no icon) to save horizontal space
@@ -796,7 +807,8 @@ void HOT TransitTracker::draw_schedule() {
     // Draw headsign with clipping
     if (headsign_clipping_end > headsign_clipping_start) {
       this->display_->start_clipping(headsign_clipping_start, y_offset - 2, headsign_clipping_end, y_offset + nominal_font_height + 2);
-      print_bold(headsign_clipping_start - scroll_offset, text_y, Color(0xFFFFFF), display::TextAlign::TOP_LEFT, row.primary_trip->headsign.c_str());
+      // Amber reads better than white through tinted acrylic in sunlight
+      print_bold(headsign_clipping_start - scroll_offset, text_y, Color(0xFFB000), display::TextAlign::TOP_LEFT, row.primary_trip->headsign.c_str());
       this->display_->end_clipping();
     }
 
