@@ -160,8 +160,8 @@ void TransitTracker::setup() {
     }
 
     if (has_stale_trips) {
-      ESP_LOGW(TAG, "Stale trips detected (rtc=%d, last_heartbeat=%lu, uptime=%lu)",
-               now.timestamp, this->last_heartbeat_.load(), millis());
+      ESP_LOGW(TAG, "Stale trips detected (rtc=%lld, last_heartbeat=%lu, uptime=%lu)",
+               (long long) now.timestamp, this->last_heartbeat_.load(), millis());
     }
   });
 }
@@ -439,7 +439,7 @@ void HOT TransitTracker::draw_realtime_icon_(int x, int y, int frame) {
 }
 
 void HOT TransitTracker::draw_schedule() {
-  if (this->display_ == nullptr) {
+  if (this->display_ == nullptr) [[unlikely]] {
     ESP_LOGW(TAG, "No display attached, cannot draw schedule");
     return;
   }
@@ -505,7 +505,10 @@ void HOT TransitTracker::draw_schedule() {
 
   int num_total_rows = this->display_rows_.size();
   int start_idx = 0;
-  int end_idx = std::min(max_visible_rows, num_total_rows);
+  // An optional header line eats one row slot at the top of the display
+  bool has_header_text = !this->header_text_.empty();
+  int visible_rows = has_header_text ? max_visible_rows - 1 : max_visible_rows;
+  int end_idx = std::min(visible_rows, num_total_rows);
 
   // Route names sit on a filled badge in the route color; badge width is shared
   // across visible rows so the headsigns start at a fixed column
@@ -685,8 +688,13 @@ void HOT TransitTracker::draw_schedule() {
   // Badges fill each row's full slot height, so center the full block (no
   // descender subtraction, which would push everything down)
   int max_trips_height = num_rows_on_page * nominal_font_height;
-  int y_offset = (this->display_->get_height() - max_trips_height) / 2;
-  if (y_offset < 0) y_offset = 0;
+  int header_height = has_header_text ? nominal_font_height : 0;
+  int y_offset = header_height + (this->display_->get_height() - header_height - max_trips_height) / 2;
+  if (y_offset < header_height) y_offset = header_height;
+
+  if (has_header_text) {
+    this->display_->print(0, 0, this->font_, Color(0x00bdbd), display::TextAlign::TOP_LEFT, this->header_text_.c_str());
+  }
 
   int badge_width = current_max_route_width + 2 * badge_pad_x;
 
