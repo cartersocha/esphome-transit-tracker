@@ -736,7 +736,7 @@ void HOT TransitTracker::draw_schedule() {
               this->display_departure_times_ ? t->departure_time : t->arrival_time,
               rtc_now
             );
-            Color color = t->is_realtime ? this->realtime_color_ : Color(0xB07800);
+            Color color = t->is_realtime ? this->realtime_color_ : Color(0xFFFFFF);
 
             // Left-align text within the column; realtime is indicated by the
             // green color alone (no icon) to save horizontal space
@@ -787,8 +787,7 @@ void HOT TransitTracker::draw_schedule() {
     // Draw headsign with clipping
     if (headsign_clipping_end > headsign_clipping_start) {
       this->display_->start_clipping(headsign_clipping_start, y_offset - 2, headsign_clipping_end, y_offset + nominal_font_height + 2);
-      // Amber reads better than white through tinted acrylic in sunlight
-      print_bold(headsign_clipping_start - scroll_offset, text_y, Color(0xFFB000), display::TextAlign::TOP_LEFT, row.primary_trip->headsign.c_str());
+      print_bold(headsign_clipping_start - scroll_offset, text_y, Color(0xFFFFFF), display::TextAlign::TOP_LEFT, row.primary_trip->headsign.c_str());
       this->display_->end_clipping();
     }
 
